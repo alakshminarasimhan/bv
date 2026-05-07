@@ -18,7 +18,8 @@ pub async fn resolve(spec: &BuildSpec) -> Result<ResolvedSpec> {
 
     let client = Client::builder()
         .user_agent("bv-builder/0.1")
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .context("build HTTP client")?;
 
