@@ -122,9 +122,21 @@ pub async fn run(
             verify_signature(&tool_id, &manifest)?;
         }
 
+        let oci_ref: OciRef = manifest
+            .tool
+            .image
+            .reference
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid image ref for '{}': {}", tool_id, e))?;
+
+        let manifest_sha256 = ops::compute_manifest_sha256(&manifest)?;
+
         if let Some(existing) = lockfile.tools.get(&tool_id)
             && existing.version == manifest.tool.version
         {
+            let manifest_unchanged =
+                existing.manifest_sha256.is_empty() || existing.manifest_sha256 == manifest_sha256;
+
             // Verify the image actually exists locally before trusting the lockfile.
             // If it was deleted with `docker rmi` or `bv cache prune --docker`, we
             // must re-pull rather than silently skip.
@@ -135,7 +147,7 @@ pub async fn run(
                     tool_id,
                     existing.version,
                 );
-            } else {
+            } else if manifest_unchanged {
                 eprintln!(
                     "  {} {} {} is already up to date",
                     "note:".if_supports_color(Stream::Stderr, |t| t.dimmed().to_string()),
@@ -166,16 +178,8 @@ pub async fn run(
 
                 continue;
             }
+            // manifest changed (e.g. image rebuilt with a new digest) — fall through to re-pull
         }
-
-        let oci_ref: OciRef = manifest
-            .tool
-            .image
-            .reference
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid image ref for '{}': {}", tool_id, e))?;
-
-        let manifest_sha256 = ops::compute_manifest_sha256(&manifest)?;
 
         to_add.push(ops::ResolvedTool {
             tool_id,
