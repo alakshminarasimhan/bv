@@ -2,6 +2,13 @@
 
 All notable changes to `bv` are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.30] - 2026-05-21
+
+### Fixed
+
+- `bv-builder` now resolves `_openmp_mutex` as a real transitive dependency instead of skipping it as a virtual package. This caused `libgomp.so.1` to be absent from any image whose tool binary links OpenMP, producing a runtime `cannot open shared object file` error.
+- `bv add` now compares the manifest SHA-256 in addition to version and Docker image presence when deciding whether a tool is up to date. A same-version image rebuild (new digest, same version string) is now detected and re-pulled.
+
 ## [0.1.29] - 2026-05-06
 
 ### Added
