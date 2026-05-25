@@ -192,7 +192,7 @@ pub async fn run(
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(entry)) => pulled.push(entry),
-            Ok(Err(e)) => failures.push(e.to_string()),
+            Ok(Err(e)) => failures.push(format!("{e:#}")),
             Err(e) => failures.push(format!("task panicked: {e}")),
         }
     }

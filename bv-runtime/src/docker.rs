@@ -455,6 +455,15 @@ fn classify_pull_error(stderr: &str, image_ref: &str) -> BvError {
             runtime: "docker".into(),
             reason: "Docker daemon is not available. Is Docker Desktop running?".into(),
         }
+    } else if stderr.contains("unauthorized")
+        || stderr.contains("access denied")
+        || stderr.contains("authentication required")
+        || stderr.contains("403 Forbidden")
+    {
+        BvError::RuntimeError(format!(
+            "access denied pulling '{image_ref}': the image may be in a private registry\n  \
+             run `docker login ghcr.io` (or the appropriate registry) and try again"
+        ))
     } else if stderr.contains("manifest unknown")
         || stderr.contains("not found")
         || stderr.contains("does not exist")

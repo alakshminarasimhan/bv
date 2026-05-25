@@ -357,7 +357,7 @@ pub fn run_prune(
 
     for img in &docker_candidates {
         let ok = std::process::Command::new("docker")
-            .args(["rmi", &img.display_ref])
+            .args(["rmi", &img.rmi_ref])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -372,10 +372,17 @@ pub fn run_prune(
                 img.display_ref,
             );
         } else {
+            let containers = containers_using_image(&img.digest);
+            let hint = if containers.is_empty() {
+                "may be in use or Docker unavailable".to_string()
+            } else {
+                format!("in use by: {}", containers.join(", "))
+            };
             println!(
-                "  {} could not remove Docker image {} (may be in use or Docker unavailable)",
+                "  {} could not remove Docker image {} ({})",
                 "warning:".if_supports_color(Stream::Stdout, |t| t.yellow().bold().to_string()),
                 img.display_ref,
+                hint,
             );
         }
     }
@@ -697,8 +704,10 @@ fn collect_locks_under(root: &Path, reach: &mut Reachable) {
 // Docker image helpers
 
 struct DockerImage {
-    /// The reference we pass to `docker rmi` (repo:tag or repo@digest).
+    /// Human-readable reference shown to the user.
     display_ref: String,
+    /// Reference passed to `docker rmi` — uses image ID when tag is `<none>`.
+    rmi_ref: String,
     /// Full image ID from `docker images --no-trunc`, used to remove from owned-images.txt.
     digest: String,
 }
@@ -766,18 +775,64 @@ fn docker_unreferenced_images(
             }
         }
 
-        let display_ref = if digest != "<none>" {
+        let tag = ref_tag.rsplit_once(':').map(|(_, t)| t).unwrap_or("");
+        let has_digest = !digest.is_empty() && digest != "<none>";
+
+        let display_ref = if tag == "<none>" {
+            // Strip the <none> tag; prefer digest form, fall back to short image ID.
+            if has_digest {
+                let repo = ref_tag.trim_end_matches(":<none>");
+                format!("{repo}@{digest}")
+            } else {
+                let short_id = id.get(7..19).unwrap_or(id); // strip "sha256:" prefix
+                format!("{} (id {})", ref_tag.trim_end_matches(":<none>"), short_id)
+            }
+        } else if has_digest {
             format!("{ref_tag}@{digest}")
         } else {
             ref_tag.to_string()
         };
+
+        // Use the image ID when tag is <none> so `docker rmi` gets a valid ref.
+        let rmi_ref = if tag == "<none>" {
+            id.to_string()
+        } else if has_digest {
+            format!("{ref_tag}@{digest}")
+        } else {
+            ref_tag.to_string()
+        };
+
         candidates.push(DockerImage {
             display_ref,
+            rmi_ref,
             digest: id.to_string(),
         });
     }
 
     candidates
+}
+
+fn containers_using_image(image_id: &str) -> Vec<String> {
+    let Ok(out) = std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("ancestor={image_id}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return vec![];
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 // Filesystem helpers
