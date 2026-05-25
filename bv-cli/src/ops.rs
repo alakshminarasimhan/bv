@@ -153,18 +153,22 @@ pub fn pull_or_reuse(
             e.manifest_sha256.is_empty() || e.manifest_sha256 == resolved.manifest_sha256;
 
         if version_matches && manifest_matches {
-            let binaries = resolved
-                .manifest
-                .tool
-                .effective_binaries()
-                .into_iter()
-                .map(str::to_string)
-                .collect();
-            return Ok(LockfileEntry {
-                manifest_sha256: resolved.manifest_sha256,
-                binaries,
-                ..e.clone()
-            });
+            // Only reuse if the image is still present locally; if it was pruned
+            // or deleted with docker rmi we must pull again.
+            if runtime.is_locally_available(&e.image_reference, &e.image_digest) {
+                let binaries = resolved
+                    .manifest
+                    .tool
+                    .effective_binaries()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                return Ok(LockfileEntry {
+                    manifest_sha256: resolved.manifest_sha256,
+                    binaries,
+                    ..e.clone()
+                });
+            }
         }
     }
 

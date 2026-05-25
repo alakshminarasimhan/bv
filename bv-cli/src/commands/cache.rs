@@ -769,7 +769,8 @@ fn docker_unreferenced_images(
         // Exemption check: skip images still in an active lockfile (unless --all).
         if !remove_all {
             let in_active_lockfile = reachable.image_references.contains(ref_tag)
-                || (!digest.is_empty() && digest != "<none>" && reachable.digests.contains(digest));
+                || (!digest.is_empty() && digest != "<none>" && reachable.digests.contains(digest))
+                || (!id.is_empty() && reachable.digests.contains(id));
             if in_active_lockfile {
                 continue;
             }
