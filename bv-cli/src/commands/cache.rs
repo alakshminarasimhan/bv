@@ -237,11 +237,17 @@ pub struct PruneSummary {
     pub index_bytes: u64,
     pub tmp_removed: usize,
     pub tmp_bytes: u64,
+    pub docker_images_removed: usize,
+    pub docker_image_bytes: u64,
 }
 
 impl PruneSummary {
     pub fn total_bytes(&self) -> u64 {
-        self.sif_bytes + self.manifest_bytes + self.index_bytes + self.tmp_bytes
+        self.sif_bytes
+            + self.manifest_bytes
+            + self.index_bytes
+            + self.tmp_bytes
+            + self.docker_image_bytes
     }
 }
 
@@ -352,8 +358,7 @@ pub fn run_prune(
         }
     }
 
-    let summary = apply_plan(&plan, &tmp_plan)?;
-    print_summary(&summary);
+    let mut summary = apply_plan(&plan, &tmp_plan)?;
 
     for img in &docker_candidates {
         let ok = std::process::Command::new("docker")
@@ -366,6 +371,8 @@ pub fn run_prune(
             .unwrap_or(false);
         if ok {
             let _ = bv_core::owned_images::remove_by_digest(&owned_path, &img.digest);
+            summary.docker_images_removed += 1;
+            summary.docker_image_bytes += img.size_bytes;
             println!(
                 "  {} Docker image {}",
                 "Removed".if_supports_color(Stream::Stdout, |t| t.green().bold().to_string()),
@@ -386,6 +393,8 @@ pub fn run_prune(
             );
         }
     }
+
+    print_summary(&summary);
 
     Ok(())
 }
@@ -634,6 +643,13 @@ fn print_summary(s: &PruneSummary) {
             format_size(s.tmp_bytes)
         );
     }
+    if s.docker_images_removed > 0 {
+        println!(
+            "  {removed}   {:>3} images      {}",
+            s.docker_images_removed,
+            format_size(s.docker_image_bytes)
+        );
+    }
     println!(
         "  {}  {}",
         "Total freed".if_supports_color(Stream::Stdout, |t| t.bold().to_string()),
@@ -710,6 +726,8 @@ struct DockerImage {
     rmi_ref: String,
     /// Full image ID from `docker images --no-trunc`, used to remove from owned-images.txt.
     digest: String,
+    /// Uncompressed size in bytes from `docker image inspect`.
+    size_bytes: u64,
 }
 
 /// Return Docker images that bv pulled and are eligible for removal.
@@ -807,10 +825,39 @@ fn docker_unreferenced_images(
             display_ref,
             rmi_ref,
             digest: id.to_string(),
+            size_bytes: 0,
         });
     }
 
+    let ids: Vec<String> = candidates.iter().map(|c| c.digest.clone()).collect();
+    let sizes = docker_image_sizes(&ids);
+    for c in &mut candidates {
+        c.size_bytes = sizes.get(&c.digest).copied().unwrap_or(0);
+    }
+
     candidates
+}
+
+fn docker_image_sizes(ids: &[String]) -> std::collections::HashMap<String, u64> {
+    if ids.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let Ok(out) = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.ID}}\t{{.Size}}"])
+        .args(ids)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return std::collections::HashMap::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (id, size) = line.split_once('\t')?;
+            Some((id.trim().to_string(), size.trim().parse::<u64>().ok()?))
+        })
+        .collect()
 }
 
 fn containers_using_image(image_id: &str) -> Vec<String> {
