@@ -447,6 +447,15 @@ fn verify_digest(image_ref: &str, expected: &str, got: &str) -> Result<()> {
 }
 
 /// Map docker pull stderr to a user-friendly `BvError`.
+fn registry_from_ref(image_ref: &str) -> &str {
+    let first = image_ref.split('/').next().unwrap_or("");
+    if first.contains('.') || first.contains(':') {
+        first
+    } else {
+        "docker.io"
+    }
+}
+
 fn classify_pull_error(stderr: &str, image_ref: &str) -> BvError {
     if stderr.contains("Cannot connect to the Docker daemon")
         || stderr.contains("Is the docker daemon running")
@@ -460,9 +469,10 @@ fn classify_pull_error(stderr: &str, image_ref: &str) -> BvError {
         || stderr.contains("authentication required")
         || stderr.contains("403 Forbidden")
     {
+        let registry = registry_from_ref(image_ref);
         BvError::RuntimeError(format!(
-            "access denied pulling '{image_ref}': the image may be in a private registry\n  \
-             run `docker login ghcr.io` (or the appropriate registry) and try again"
+            "access denied pulling '{image_ref}'\n  \
+             run `docker login {registry}` to authenticate"
         ))
     } else if stderr.contains("manifest unknown")
         || stderr.contains("not found")
