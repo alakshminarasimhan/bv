@@ -295,7 +295,7 @@ pub fn run_prune(
     let tmp_plan = plan_tmp(&root.join("tmp"));
 
     let total_items = plan.items.len() + tmp_plan.items.len();
-    let total_bytes: u64 = plan.items.iter().map(|i| i.size).sum::<u64>()
+    let fs_bytes: u64 = plan.items.iter().map(|i| i.size).sum::<u64>()
         + tmp_plan.items.iter().map(|i| i.size).sum::<u64>();
 
     // Load the persistent ownership record. This is the authoritative list of
@@ -305,6 +305,8 @@ pub fn run_prune(
 
     // Docker image candidates: owned by bv and (if !all) not in any current lockfile.
     let docker_candidates = docker_unreferenced_images(&owned, &reachable, all);
+    let docker_bytes: u64 = docker_candidates.iter().map(|img| img.size_bytes).sum();
+    let total_bytes = fs_bytes + docker_bytes;
 
     if total_items == 0 && docker_candidates.is_empty() {
         println!("  nothing to prune");
@@ -322,7 +324,7 @@ pub fn run_prune(
         }
         println!(
             "  Total: {} items, {} would be freed.",
-            total_items,
+            total_items + docker_candidates.len(),
             format_size(total_bytes),
         );
         return Ok(());
