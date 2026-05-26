@@ -128,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Cache(cache_cmd) => commands::cache_cmd(cache_cmd),
         Commands::Publish {
             source,
+            spec,
             tool_name,
             tool_version,
             non_interactive,
@@ -141,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             publish::run(publish::PublishOpts {
                 source: source.clone(),
+                spec: spec.clone(),
                 tool_name: tool_name.clone(),
                 version: tool_version.clone(),
                 non_interactive: *non_interactive,

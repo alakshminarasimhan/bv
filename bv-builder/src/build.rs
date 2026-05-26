@@ -11,9 +11,10 @@ use oci_client::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::catalog::LayerCatalog;
 use crate::layering::{LayerGroup, PackingStrategy, pack};
 use crate::popularity::PopularityMap;
-use crate::spec::ResolvedSpec;
+use crate::spec::{ResolvedPackage, ResolvedSpec};
 
 // SOURCE_DATE_EPOCH = 0 (1970-01-01T00:00:00Z).
 // Reproducibility rule: all file mtimes set to this value so that two builds
@@ -74,12 +75,17 @@ impl OciImage {
 /// Each package in the spec becomes one OCI layer (or a group when packing
 /// is enabled). A base OS layer (defaults to debian:12-slim) is prepended so
 /// the container has the dynamic linker and glibc that conda binaries require.
+///
+/// When `catalog` is provided and `strategy` is `CatalogAware`, packages with
+/// existing catalog entries get priority for solo layers. After the build,
+/// call `catalog_updates_from_image()` to collect new entries to write back.
 pub async fn build(
     resolved: &ResolvedSpec,
     strategy: &PackingStrategy,
     popularity: Option<&PopularityMap>,
+    catalog: Option<&LayerCatalog>,
 ) -> Result<OciImage> {
-    let groups = pack(&resolved.packages, strategy, popularity);
+    let groups = pack(&resolved.packages, strategy, popularity, catalog);
 
     let http = reqwest::Client::builder()
         .user_agent("bv-builder/0.1")
@@ -370,13 +376,59 @@ fn extract_conda_archive(data: &[u8], dest: &Path) -> Result<()> {
 fn extract_tar_bz2(data: &[u8], dest: &Path) -> Result<()> {
     let decompressed = bzip2::read::BzDecoder::new(data);
     let mut archive = tar::Archive::new(decompressed);
-    archive.unpack(dest).context("unpack tar.bz2")?;
-    Ok(())
+    unpack_tar_into(&mut archive, dest)
 }
 
 fn extract_tar_bytes(data: &[u8], dest: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(std::io::Cursor::new(data));
-    archive.unpack(dest).context("unpack tar")?;
+    unpack_tar_into(&mut archive, dest)
+}
+
+/// Extract a tar archive into `dest`, handling two conda package quirks:
+///
+/// 1. ENOTDIR: some packages have both a plain file and a directory entry with
+///    the same name (e.g. info/licenses/LICENSE file + info/licenses/LICENSE/X).
+///    These are license metadata only; skip the conflicting entry.
+///
+/// 2. Absolute symlinks: the tar crate's unpack_in rejects symlinks whose
+///    resolved target escapes the destination root. Conda packages routinely
+///    use absolute symlinks (e.g. /opt/conda/lib/...) that are only valid
+///    inside the final container. Extract those directly via symlink().
+fn unpack_tar_into<R: std::io::Read>(archive: &mut tar::Archive<R>, dest: &Path) -> Result<()> {
+    for entry in archive.entries().context("read tar entries")? {
+        let mut entry = entry.context("read tar entry")?;
+
+        if entry.header().entry_type() == tar::EntryType::Symlink {
+            let entry_path = entry.path().context("read entry path")?;
+            let link_name = entry
+                .link_name()
+                .context("read symlink target")?
+                .context("missing symlink target")?;
+
+            // Sanitize the entry path so it can't escape dest.
+            let rel: std::path::PathBuf = entry_path
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .collect();
+            let full_path = dest.join(&rel);
+
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let _ = std::fs::remove_file(&full_path);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&*link_name, &full_path)
+                .with_context(|| format!("symlink {:?} -> {:?}", full_path, link_name))?;
+            continue;
+        }
+
+        if let Err(e) = entry.unpack_in(dest) {
+            if e.kind() == std::io::ErrorKind::NotADirectory {
+                continue;
+            }
+            return Err(e).context("unpack tar entry");
+        }
+    }
     Ok(())
 }
 
@@ -562,6 +614,40 @@ fn build_config(resolved: &ResolvedSpec, layers: &[OciLayer]) -> Result<Vec<u8>>
     });
 
     Ok(serde_json::to_vec_pretty(&config)?)
+}
+
+/// Collect catalog updates from a freshly built image.
+///
+/// For every solo-layer (one package, identified by a `conda_package` pin on
+/// the descriptor), emit a `(name, version, build, digest)` tuple. The caller
+/// merges these into the `LayerCatalog` and writes it back to the registry.
+pub fn catalog_updates_from_image(image: &OciImage) -> Vec<(&str, &str, &str, &str)> {
+    image
+        .layers
+        .iter()
+        .filter_map(|layer| {
+            let pin = layer.descriptor.conda_package.as_ref()?;
+            Some((
+                pin.name.as_str(),
+                pin.version.as_str(),
+                pin.build.as_str(),
+                layer.descriptor.digest.as_str(),
+            ))
+        })
+        .collect()
+}
+
+/// Collect all conda packages included in a resolved spec's layer list,
+/// grouped by whether they already appear in the catalog.
+pub fn catalog_coverage(
+    packages: &[ResolvedPackage],
+    catalog: &LayerCatalog,
+) -> (usize, usize) {
+    let hits = packages
+        .iter()
+        .filter(|p| catalog.contains(&p.name, &p.version, &p.build))
+        .count();
+    (hits, packages.len() - hits)
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {

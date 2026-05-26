@@ -187,6 +187,9 @@ pub struct PrContext<'a> {
     pub github_token: &'a str,
     pub registry_repo: &'a str,
     pub source_url: &'a str,
+    /// Additional files to commit alongside the manifest.
+    /// Each entry is `(repo_path, content)`.
+    pub extra_files: Vec<(String, String)>,
 }
 
 pub async fn open_pr(ctx: PrContext<'_>) -> anyhow::Result<String> {
@@ -305,6 +308,32 @@ pub async fn open_pr(ctx: PrContext<'_>) -> anyhow::Result<String> {
         ctx.tool_name,
         ctx.version
     );
+
+    for (extra_path, extra_content) in &ctx.extra_files {
+        let extra_url = format!(
+            "{}/repos/{}/contents/{}",
+            GH_API, fork_full_name, extra_path
+        );
+        let existing_sha = gh
+            .get_opt(&format!("{}?ref={}", extra_url, branch_name))
+            .await?
+            .and_then(|v| v.get("sha").and_then(|s| s.as_str()).map(|s| s.to_string()));
+
+        let mut body = serde_json::json!({
+            "message": format!("Add {name} {version} ({extra_path})",
+                name = ctx.tool_name, version = ctx.version),
+            "content": STANDARD.encode(extra_content),
+            "branch": branch_name
+        });
+        if let Some(sha) = existing_sha {
+            body["sha"] = serde_json::json!(sha);
+        }
+        gh.put(&extra_url, body).await?;
+        eprintln!(
+            "    {} {extra_path}",
+            "Committed".if_supports_color(Stream::Stderr, |t| t.dimmed().to_string()),
+        );
+    }
 
     // Open PR from fork to upstream.
     let pr_title = format!(

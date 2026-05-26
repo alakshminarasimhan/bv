@@ -16,6 +16,10 @@ fn registry_auth() -> RegistryAuth {
     }
 }
 
+fn token_auth(token: &str) -> RegistryAuth {
+    RegistryAuth::Basic("token".into(), token.to_string())
+}
+
 /// Load an OCI image from a tarball previously saved by `save_oci_tarball`.
 pub fn load_from_tarball(path: &std::path::Path) -> Result<OciImage> {
     use std::io::Read;
@@ -98,10 +102,22 @@ pub fn load_from_tarball(path: &std::path::Path) -> Result<OciImage> {
     })
 }
 
+/// Push an `OciImage` to a registry using an explicit token.
+///
+/// Use this from callers that already have a GHCR token from user auth,
+/// rather than relying on the `GITHUB_TOKEN` env var.
+pub async fn push_authenticated(image: &OciImage, reference: &str, token: &str) -> Result<String> {
+    push_inner(image, reference, token_auth(token)).await
+}
+
 /// Push an `OciImage` to a registry.
 ///
 /// Returns the digest of the pushed manifest.
 pub async fn push(image: &OciImage, reference: &str) -> Result<String> {
+    push_inner(image, reference, registry_auth()).await
+}
+
+async fn push_inner(image: &OciImage, reference: &str, auth: RegistryAuth) -> Result<String> {
     let reference: Reference = reference
         .parse()
         .with_context(|| format!("parse OCI reference '{reference}'"))?;
@@ -115,7 +131,6 @@ pub async fn push(image: &OciImage, reference: &str) -> Result<String> {
     };
 
     let client = Client::new(config);
-    let auth = registry_auth();
 
     let mut delay = std::time::Duration::from_secs(30);
     let mut last_err: Option<anyhow::Error> = None;

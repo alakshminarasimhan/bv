@@ -11,6 +11,22 @@ pub struct FetchedSource {
     _tempdir: Option<TempDir>,
 }
 
+impl FetchedSource {
+    /// Construct a synthetic FetchedSource that points at a local directory
+    /// with no temp dir lifecycle. Used by the conda publish path, which
+    /// doesn't clone a remote repo.
+    pub fn local_dir(dir: PathBuf, name_hint: String, version_hint: Option<String>) -> Self {
+        let source_url = format!("local:{}", dir.display());
+        Self {
+            dir,
+            name_hint,
+            version_hint,
+            source_url,
+            _tempdir: None,
+        }
+    }
+}
+
 pub enum Source {
     LocalDir(PathBuf),
     GitHub {

@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod build;
+pub mod conda;
 pub mod detect;
 pub mod pr;
 pub mod scaffold;
@@ -11,6 +12,9 @@ use owo_colors::{OwoColorize, Stream};
 
 pub struct PublishOpts {
     pub source: String,
+    /// Path to a bv-builder conda spec TOML. When set, skips Docker build and
+    /// uses bv-builder to produce a factored OCI image from conda packages.
+    pub spec: Option<std::path::PathBuf>,
     pub tool_name: Option<String>,
     pub version: Option<String>,
     pub non_interactive: bool,
@@ -26,6 +30,23 @@ pub struct PublishOpts {
 }
 
 pub async fn run(opts: PublishOpts) -> anyhow::Result<()> {
+    if let Some(spec) = opts.spec {
+        return conda::run(conda::CondaPublishOpts {
+            spec,
+            source_dir: std::path::PathBuf::from(&opts.source),
+            tool_name: opts.tool_name,
+            version: opts.version,
+            non_interactive: opts.non_interactive,
+            no_push: opts.no_push,
+            no_pr: opts.no_pr,
+            github_token: opts.github_token,
+            ghcr_token: opts.ghcr_token,
+            registry_repo: opts.registry_repo,
+            push_to: opts.push_to,
+        })
+        .await;
+    }
+
     bv_runtime::DockerRuntime
         .health_check()
         .context("Docker is not available. Is Docker Desktop running?")?;
@@ -159,6 +180,7 @@ pub async fn run(opts: PublishOpts) -> anyhow::Result<()> {
         github_token: &github_token,
         registry_repo: &opts.registry_repo,
         source_url: &fetched.source_url,
+        extra_files: vec![],
     })
     .await?;
 

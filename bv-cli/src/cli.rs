@@ -268,9 +268,19 @@ pub enum Commands {
     },
 
     /// Build and publish a tool to bv-registry (opens a PR).
+    ///
+    /// For Docker-based tools, pass a local directory or GitHub repo as `source`.
+    /// For conda-based tools, pass `--spec <conda-spec.toml>` and bv-builder
+    /// will resolve packages, build a factored OCI image, and push it directly.
     Publish {
         /// Local directory or GitHub repo, e.g. `./my-tool` or `github:user/repo` or `github:user/repo@v2.0`.
+        /// When --spec is given this is only used to find bv-publish.toml for metadata; defaults to `.`.
+        #[arg(default_value = ".")]
         source: String,
+        /// Path to a bv-builder conda spec TOML.
+        /// When provided, publishes a conda-factored image instead of a Docker image.
+        #[arg(long)]
+        spec: Option<PathBuf>,
         /// Tool name override (also settable in bv-publish.toml).
         #[arg(long)]
         tool_name: Option<String>,

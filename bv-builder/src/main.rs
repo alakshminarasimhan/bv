@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bv_builder::{
     build::{self},
+    catalog::LayerCatalog,
     layering::PackingStrategy,
     oci,
     popularity::{self, PopularityMap},
@@ -47,6 +48,11 @@ enum Commands {
         /// Path to a popularity.json file produced by `bv-builder pack`.
         #[arg(long)]
         popularity: Option<PathBuf>,
+        /// Path to a layers/catalog.json file. When provided, enables catalog-aware
+        /// packing: packages with catalog entries get priority for solo layers,
+        /// and newly built solo layers are written back to this file.
+        #[arg(long)]
+        catalog: Option<PathBuf>,
     },
     /// Push a built OCI image to a registry.
     Push {
@@ -109,6 +115,7 @@ async fn main() -> Result<()> {
             output,
             max_layers,
             popularity: pop_path,
+            catalog: catalog_path,
         } => {
             let build_spec = load_spec(&spec)?;
             eprintln!("  Resolving {} {}...", build_spec.name, build_spec.version);
@@ -122,16 +129,53 @@ async fn main() -> Result<()> {
                 .transpose()
                 .context("load popularity map")?;
 
-            let strategy = if max_layers > 0 {
+            let mut cat: Option<LayerCatalog> = catalog_path
+                .as_ref()
+                .map(|p| {
+                    if p.exists() {
+                        LayerCatalog::load(p)
+                    } else {
+                        Ok(LayerCatalog::new())
+                    }
+                })
+                .transpose()
+                .context("load layer catalog")?;
+
+            let strategy = if catalog_path.is_some() && max_layers > 0 {
+                PackingStrategy::CatalogAware { max_layers }
+            } else if max_layers > 0 {
                 PackingStrategy::PopularityBased { max_layers }
             } else {
                 PackingStrategy::OnePerPackage
             };
 
+            if let (Some(c), true) = (cat.as_ref(), catalog_path.is_some()) {
+                let hits = resolved
+                    .packages
+                    .iter()
+                    .filter(|p| c.contains(&p.name, &p.version, &p.build))
+                    .count();
+                eprintln!(
+                    "  Catalog: {}/{} packages already have registry blobs",
+                    hits,
+                    resolved.packages.len()
+                );
+            }
+
             eprintln!("  Building {} layers...", resolved.packages.len());
-            let image = build::build(&resolved, &strategy, pop_map.as_ref())
+            let image = build::build(&resolved, &strategy, pop_map.as_ref(), cat.as_ref())
                 .await
                 .context("build OCI image")?;
+
+            if let (Some(c), Some(path)) = (cat.as_mut(), catalog_path.as_ref()) {
+                let updates = build::catalog_updates_from_image(&image);
+                let added = updates.len();
+                for (name, version, build_str, digest) in updates {
+                    c.record(name, version, build_str, digest);
+                }
+                c.save(path).context("update layer catalog")?;
+                eprintln!("  Catalog: added {} new entries -> {}", added, path.display());
+            }
 
             let manifest = image.manifest_json()?;
             let manifest_digest = format!("sha256:{}", build::sha256_hex(&manifest));

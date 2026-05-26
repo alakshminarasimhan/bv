@@ -1,5 +1,6 @@
 use bv_core::lockfile::{CondaPackagePin, LayerDescriptor};
 
+use crate::catalog::LayerCatalog;
 use crate::popularity::PopularityMap;
 use crate::spec::ResolvedPackage;
 
@@ -14,7 +15,23 @@ pub enum PackingStrategy {
     #[default]
     OnePerPackage,
     /// Popularity-based packing when `max_layers` is exceeded.
+    ///
+    /// Requires a pre-computed `PopularityMap` from `bv-builder pack`. The
+    /// most popular packages (by co-occurrence across all registry specs) get
+    /// solo layers; the long tail is bundled into one layer.
     PopularityBased { max_layers: usize },
+    /// Catalog-aware greedy packing.
+    ///
+    /// Packages that already have an entry in the `LayerCatalog` (meaning a
+    /// matching blob is already on the registry from a previous build) are
+    /// sorted by their catalog count descending and given priority for solo
+    /// layers. Cache-miss packages fill the remaining solo slots; any overflow
+    /// goes into a single long-tail layer.
+    ///
+    /// This is the preferred strategy for `bv publish --spec` because it
+    /// requires no pre-computation: the catalog grows incrementally and each
+    /// new publish greedily populates it.
+    CatalogAware { max_layers: usize },
 }
 
 /// A group of packages that will be combined into a single OCI layer.
@@ -25,17 +42,13 @@ pub struct LayerGroup {
 
 /// Group `packages` into layer groups according to `strategy`.
 ///
-/// When `popularity` is provided and `strategy` is `PopularityBased`, packages
-/// are sorted by their co-occurrence score (descending) before splitting into
-/// solo vs. long-tail groups. Without scores the sort falls back to package
-/// name for determinism, which is correct but not optimal.
-///
 /// The caller is responsible for appending the meta layer and entrypoint layer
 /// after the returned groups.
 pub fn pack(
     packages: &[ResolvedPackage],
     strategy: &PackingStrategy,
     popularity: Option<&PopularityMap>,
+    catalog: Option<&LayerCatalog>,
 ) -> Vec<LayerGroup> {
     match strategy {
         PackingStrategy::OnePerPackage => packages
@@ -47,6 +60,10 @@ pub fn pack(
 
         PackingStrategy::PopularityBased { max_layers } => {
             pack_by_popularity(packages, *max_layers, popularity)
+        }
+
+        PackingStrategy::CatalogAware { max_layers } => {
+            pack_by_catalog(packages, *max_layers, catalog)
         }
     }
 }
@@ -80,6 +97,59 @@ fn pack_by_popularity(
         let sa = popularity.map(|p| p.score(&a.name)).unwrap_or(0);
         let sb = popularity.map(|p| p.score(&b.name)).unwrap_or(0);
         sb.cmp(&sa).then(a.name.cmp(&b.name))
+    });
+
+    let solo_count = max_layers.saturating_sub(2).min(sorted.len());
+    let (solo, tail) = sorted.split_at(solo_count);
+
+    let mut groups: Vec<LayerGroup> = solo
+        .iter()
+        .map(|p| LayerGroup {
+            packages: vec![p.clone()],
+        })
+        .collect();
+
+    if !tail.is_empty() {
+        groups.push(LayerGroup {
+            packages: tail.to_vec(),
+        });
+    }
+    groups
+}
+
+/// Sort packages so catalog hits come first (by count desc, then name asc for
+/// determinism within ties). Cache misses follow in name order. Assign the
+/// first `max_layers - 2` packages their own layer; bundle the rest into a
+/// single long-tail layer. The last two slots are reserved for the meta and
+/// entrypoint layers the caller appends.
+///
+/// Packages already in the catalog already have a matching blob on the
+/// registry from a previous build. Giving them solo-layer priority maximises
+/// cross-image layer deduplication without requiring any pre-computed global
+/// popularity file.
+fn pack_by_catalog(
+    packages: &[ResolvedPackage],
+    max_layers: usize,
+    catalog: Option<&LayerCatalog>,
+) -> Vec<LayerGroup> {
+    if max_layers < 3 || packages.is_empty() {
+        return vec![LayerGroup {
+            packages: packages.to_vec(),
+        }];
+    }
+
+    let mut sorted = packages.to_vec();
+    sorted.sort_by(|a, b| {
+        let ca = catalog
+            .and_then(|c| c.get(&a.name, &a.version, &a.build))
+            .map(|e| e.count)
+            .unwrap_or(0);
+        let cb = catalog
+            .and_then(|c| c.get(&b.name, &b.version, &b.build))
+            .map(|e| e.count)
+            .unwrap_or(0);
+        // Higher count first; break ties by name for determinism.
+        cb.cmp(&ca).then(a.name.cmp(&b.name))
     });
 
     let solo_count = max_layers.saturating_sub(2).min(sorted.len());
@@ -138,7 +208,7 @@ mod tests {
     #[test]
     fn one_per_package_gives_n_groups() {
         let pkgs = vec![pkg("openssl"), pkg("zlib"), pkg("samtools")];
-        let groups = pack(&pkgs, &PackingStrategy::OnePerPackage, None);
+        let groups = pack(&pkgs,  &PackingStrategy::OnePerPackage,  None, None);
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].packages[0].name, "openssl");
     }
@@ -149,6 +219,7 @@ mod tests {
         let groups = pack(
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 5 },
+            None,
             None,
         );
         // 3 solo layers + 1 long-tail (slots 4 and 5 reserved for meta+entrypoint)
@@ -162,6 +233,7 @@ mod tests {
         let groups = pack(
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
+            None,
             None,
         );
         assert_eq!(groups.len(), 1);
@@ -185,6 +257,7 @@ mod tests {
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
             Some(&pop),
+            None,
         );
 
         // All three fit in solo layers (64 - 2 = 62 solo slots).
@@ -212,6 +285,7 @@ mod tests {
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 5 },
             Some(&pop),
+            None,
         );
 
         // Exactly 4 groups: openssl solo, zlib solo, bz2 solo, long-tail (rare1+rare2).
@@ -232,11 +306,13 @@ mod tests {
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
             Some(&pop),
+            None,
         );
         let groups2 = pack(
             &pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
             Some(&pop),
+            None,
         );
 
         let names1: Vec<_> = groups1
@@ -308,6 +384,7 @@ mod tests {
                     max_layers: MAX_LAYERS,
                 },
                 Some(&pop),
+                None,
             );
 
             // Every shared package must appear in a solo group (one package per group).
@@ -339,11 +416,13 @@ mod tests {
             &samtools_pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
             Some(&pop),
+            None,
         );
         let groups_b = pack(
             &bwa_pkgs,
             &PackingStrategy::PopularityBased { max_layers: 64 },
             Some(&pop),
+            None,
         );
 
         // openssl is the first group in both (highest score = 2).
@@ -356,5 +435,83 @@ mod tests {
             groups_s[0].packages[0].sha256,
             groups_b[0].packages[0].sha256,
         );
+    }
+
+    fn pkg_versioned(name: &str, version: &str, build: &str) -> ResolvedPackage {
+        ResolvedPackage {
+            name: name.into(),
+            version: version.into(),
+            build: build.into(),
+            channel: "conda-forge".into(),
+            url: format!("https://example.com/{name}.conda"),
+            sha256: "abc".into(),
+            filename: format!("{name}-{version}-{build}.conda"),
+            depends: vec![],
+        }
+    }
+
+    #[test]
+    fn catalog_aware_prioritizes_known_packages() {
+        let mut cat = LayerCatalog::new();
+        // openssl seen in 2 builds, zlib in 1, "rare" not in catalog
+        cat.record("openssl", "1.0.0", "h0_0", "sha256:aaa");
+        cat.record("openssl", "1.0.0", "h0_0", "sha256:aaa");
+        cat.record("zlib", "1.0.0", "h0_0", "sha256:bbb");
+
+        let pkgs = vec![
+            pkg_versioned("rare", "1.0.0", "h0_0"),
+            pkg_versioned("zlib", "1.0.0", "h0_0"),
+            pkg_versioned("openssl", "1.0.0", "h0_0"),
+        ];
+        let groups = pack(
+            &pkgs,
+            &PackingStrategy::CatalogAware { max_layers: 64 },
+            None,
+            Some(&cat),
+        );
+
+        // All three fit in solo layers (64 - 2 = 62 slots).
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].packages[0].name, "openssl"); // count=2
+        assert_eq!(groups[1].packages[0].name, "zlib");    // count=1
+        assert_eq!(groups[2].packages[0].name, "rare");    // count=0
+    }
+
+    #[test]
+    fn catalog_aware_pushes_unknown_to_long_tail_when_budget_tight() {
+        let mut cat = LayerCatalog::new();
+        cat.record("openssl", "1.0.0", "h0_0", "sha256:aaa");
+        cat.record("zlib", "1.0.0", "h0_0", "sha256:bbb");
+        cat.record("libgcc", "1.0.0", "h0_0", "sha256:ccc");
+
+        // 5 packages, max_layers=5 → 3 solo slots, 2 unknowns go to long-tail
+        let pkgs = vec![
+            pkg_versioned("rare1", "1.0.0", "h0_0"),
+            pkg_versioned("rare2", "1.0.0", "h0_0"),
+            pkg_versioned("openssl", "1.0.0", "h0_0"),
+            pkg_versioned("zlib", "1.0.0", "h0_0"),
+            pkg_versioned("libgcc", "1.0.0", "h0_0"),
+        ];
+        let groups = pack(
+            &pkgs,
+            &PackingStrategy::CatalogAware { max_layers: 5 },
+            None,
+            Some(&cat),
+        );
+
+        // 3 solo (catalog hits) + 1 long-tail (2 cache misses)
+        assert_eq!(groups.len(), 4);
+        let solo_names: Vec<_> = groups[..3]
+            .iter()
+            .map(|g| g.packages[0].name.as_str())
+            .collect();
+        assert!(solo_names.contains(&"openssl"));
+        assert!(solo_names.contains(&"zlib"));
+        assert!(solo_names.contains(&"libgcc"));
+        let tail = groups.last().unwrap();
+        assert_eq!(tail.packages.len(), 2);
+        let tail_names: Vec<_> = tail.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(tail_names.contains(&"rare1"));
+        assert!(tail_names.contains(&"rare2"));
     }
 }

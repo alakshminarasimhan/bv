@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use bv_core::lockfile::LayerDescriptor;
 use bv_core::manifest::{
-    EntrypointSpec, GpuSpec, HardwareSpec, ImageSpec, IoSpec, Manifest, Tier, ToolManifest,
+    EntrypointSpec, FactoredCondaPin, FactoredLayerSpec, FactoredSpec, GpuSpec, HardwareSpec,
+    ImageSpec, IoSpec, Manifest, Tier, ToolManifest,
 };
 use bv_types::Cardinality;
 use inquire::{Confirm, CustomType, Select, Text};
@@ -136,6 +138,96 @@ impl ScaffoldResult {
                 smoke: None,
                 signatures: None,
                 factored: None,
+            },
+        };
+        m.to_toml_string().map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Generate a manifest TOML for a conda-factored image.
+    ///
+    /// Produces both `[tool.image]` (fallback) and `[tool.factored]` (layer list),
+    /// matching the format used by images built with `bv-builder`.
+    pub fn to_conda_manifest_toml(
+        &self,
+        image_ref: &str,
+        digest: &str,
+        layers: &[LayerDescriptor],
+    ) -> anyhow::Result<String> {
+        let spec_path = format!("specs/{}/{}.toml", self.name, self.version);
+
+        let factored_layers: Vec<FactoredLayerSpec> = layers
+            .iter()
+            .map(|l| FactoredLayerSpec {
+                digest: l.digest.clone(),
+                size: l.size,
+                media_type: l.media_type.clone(),
+                conda_package: l.conda_package.as_ref().map(|p| FactoredCondaPin {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    build: p.build.clone(),
+                    channel: p.channel.clone(),
+                    sha256: p.sha256.clone(),
+                }),
+            })
+            .collect();
+
+        let m = Manifest {
+            tool: ToolManifest {
+                id: self.name.clone(),
+                version: self.version.clone(),
+                description: self.description.clone(),
+                homepage: self.homepage.clone(),
+                license: self.license.clone(),
+                tier: Tier::Community,
+                maintainers: vec![],
+                deprecated: false,
+                image: ImageSpec {
+                    backend: "docker".to_string(),
+                    reference: image_ref.to_string(),
+                    digest: if digest.is_empty() {
+                        None
+                    } else {
+                        Some(digest.to_string())
+                    },
+                },
+                hardware: HardwareSpec {
+                    gpu: self.needs_gpu.then_some(GpuSpec {
+                        required: true,
+                        min_vram_gb: None,
+                        cuda_version: None,
+                    }),
+                    cpu_cores: Some(self.cpu_cores),
+                    ram_gb: Some(self.ram_gb),
+                    disk_gb: Some(self.disk_gb),
+                },
+                reference_data: Default::default(),
+                inputs: self.inputs.clone(),
+                outputs: self.outputs.clone(),
+                entrypoint: if self.entrypoint_command.is_empty() {
+                    None
+                } else {
+                    Some(EntrypointSpec {
+                        command: self.entrypoint_command.clone(),
+                        args_template: self.args_template.clone(),
+                        env: Default::default(),
+                    })
+                },
+                subcommands: self
+                    .subcommands
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                cache_paths: vec![],
+                binaries: None,
+                smoke: None,
+                signatures: None,
+                factored: Some(FactoredSpec {
+                    spec_path,
+                    image_reference: image_ref.to_string(),
+                    image_digest: digest.to_string(),
+                    repodata_snapshot_digest: None,
+                    layers: factored_layers,
+                }),
             },
         };
         m.to_toml_string().map_err(|e| anyhow::anyhow!("{}", e))

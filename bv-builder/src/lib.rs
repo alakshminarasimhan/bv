@@ -1,4 +1,5 @@
 pub mod build;
+pub mod catalog;
 pub mod layering;
 pub mod oci;
 pub mod popularity;

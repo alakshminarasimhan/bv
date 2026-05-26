@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.102"
+bv-builder = { version = "0.1.0", path = "../bv-builder" }
 bv-core = { version = "0.1.0", path = "../bv-core" }
 bv-index = { version = "0.1.0", path = "../bv-index" }
 bv-runtime = { version = "0.1.0", path = "../bv-runtime" }
