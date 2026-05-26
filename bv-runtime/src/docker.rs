@@ -464,6 +464,12 @@ fn classify_pull_error(stderr: &str, image_ref: &str) -> BvError {
             runtime: "docker".into(),
             reason: "Docker daemon is not available. Is Docker Desktop running?".into(),
         }
+    } else if stderr.contains("max depth exceeded") {
+        BvError::LayerLimitExceeded(format!(
+            "image '{image_ref}' has too many layers for Docker's storage driver\n  \
+             Docker's overlay2 driver supports up to 127 layers on most Linux kernels\n  \
+             bv will retry using the base image reference"
+        ))
     } else if stderr.contains("unauthorized")
         || stderr.contains("access denied")
         || stderr.contains("authentication required")

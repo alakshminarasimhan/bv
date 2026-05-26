@@ -188,7 +188,17 @@ pub fn pull_and_make_entry(
 ) -> anyhow::Result<LockfileEntry> {
     let entry = if let Some(factored) = &resolved.manifest.tool.factored {
         if !factored.image_digest.is_empty() {
-            pull_and_make_entry_factored(resolved, factored, reporter, cache, runtime)?
+            match pull_and_make_entry_factored(resolved, factored, reporter, cache, runtime) {
+                Ok(e) => e,
+                Err(e) if is_layer_limit_error(&e) => {
+                    reporter.println(&format!(
+                        "  {} factored image exceeds Docker layer limit; pulling base image instead",
+                        "note:".if_supports_color(Stream::Stderr, |t| t.dimmed().to_string()),
+                    ));
+                    pull_and_make_entry_legacy(resolved, reporter, cache, runtime)?
+                }
+                Err(e) => return Err(e),
+            }
         } else {
             pull_and_make_entry_legacy(resolved, reporter, cache, runtime)?
         }
@@ -390,6 +400,15 @@ fn pull_and_make_entry_factored(
         resolved_at: Utc::now(),
         reference_data_pins: BTreeMap::new(),
         binaries,
+    })
+}
+
+fn is_layer_limit_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<bv_core::error::BvError>(),
+            Some(bv_core::error::BvError::LayerLimitExceeded(_))
+        )
     })
 }
 

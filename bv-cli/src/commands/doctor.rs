@@ -108,7 +108,15 @@ pub fn run() -> anyhow::Result<()> {
     section("Cache");
     let cache = CacheLayout::new();
     let root = cache.root().clone();
-    kv("path", &root.display().to_string());
+    let path_display = if std::env::var("BV_CACHE_DIR").is_ok() {
+        format!("{} (from $BV_CACHE_DIR)", root.display())
+    } else {
+        root.display().to_string()
+    };
+    kv("path", &path_display);
+    if std::env::var("BV_CACHE_DIR").is_err() {
+        kv_dim("relocate", "set $BV_CACHE_DIR to store images elsewhere");
+    }
 
     // Recursive sizing of ~/.cache/bv can take seconds for users with many GB
     // pulled. Show a spinner so it doesn't look frozen.

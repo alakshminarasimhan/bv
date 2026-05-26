@@ -40,7 +40,9 @@ enum Commands {
         #[arg(long)]
         output: Option<PathBuf>,
         /// Maximum number of OCI layers (enables popularity-based packing).
-        #[arg(long, default_value = "0")]
+        /// Defaults to 125 to stay within Docker overlay2's 127-layer limit.
+        /// Set to 0 to disable grouping and give each package its own layer.
+        #[arg(long, default_value = "125")]
         max_layers: usize,
         /// Path to a popularity.json file produced by `bv-builder pack`.
         #[arg(long)]

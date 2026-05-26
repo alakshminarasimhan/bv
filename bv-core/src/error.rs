@@ -14,6 +14,9 @@ pub enum BvError {
     #[error("runtime error: {0}")]
     RuntimeError(String),
 
+    #[error("image layer limit exceeded: {0}")]
+    LayerLimitExceeded(String),
+
     #[error("index error: {0}")]
     IndexError(String),
 
