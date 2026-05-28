@@ -65,24 +65,40 @@ fn load_manifest(tool: &str) -> anyhow::Result<Manifest> {
 }
 
 fn find_latest_version_in_dir(dir: &PathBuf) -> anyhow::Result<PathBuf> {
-    // Sort by parsed semver::Version so 2.10.1 beats 2.9.0 (lexicographic
-    // sort places "2.10" before "2.9" because of the leading character).
-    // Files whose stems don't parse as semver are skipped silently.
-    let mut versioned: Vec<(semver::Version, PathBuf)> = std::fs::read_dir(dir)?
+    let entries: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
-        .filter_map(|e| {
-            let path = e.path();
-            let stem = path.file_stem().and_then(|s| s.to_str())?;
+        .map(|e| e.path())
+        .collect();
+
+    if entries.is_empty() {
+        anyhow::bail!("no manifest files found in {}", dir.display());
+    }
+
+    // Prefer semver ordering (handles 2.10.1 > 2.9.0 correctly). Fall back
+    // to lexicographic sort for date-style versions like "20241201".
+    let mut semver_entries: Vec<(semver::Version, PathBuf)> = entries
+        .iter()
+        .filter_map(|p| {
+            let stem = p.file_stem().and_then(|s| s.to_str())?;
             let v = semver::Version::parse(stem).ok()?;
-            Some((v, path))
+            Some((v, p.clone()))
         })
         .collect();
-    versioned.sort_by(|a, b| a.0.cmp(&b.0));
-    versioned
-        .pop()
-        .map(|(_, p)| p)
-        .ok_or_else(|| anyhow::anyhow!("no manifest files found in {}", dir.display()))
+
+    if !semver_entries.is_empty() {
+        semver_entries.sort_by(|a, b| a.0.cmp(&b.0));
+        return Ok(semver_entries.pop().unwrap().1);
+    }
+
+    // Non-semver fallback: lexicographic sort (works for YYYYMMDD, plain integers, etc.)
+    let mut sorted = entries;
+    sorted.sort_by(|a, b| {
+        let sa = a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let sb = b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        sa.cmp(sb)
+    });
+    Ok(sorted.pop().unwrap())
 }
 
 fn print_human(tool: &ToolManifest) {

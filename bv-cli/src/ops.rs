@@ -188,7 +188,23 @@ pub fn pull_and_make_entry(
 ) -> anyhow::Result<LockfileEntry> {
     let entry = if let Some(factored) = &resolved.manifest.tool.factored {
         if !factored.image_digest.is_empty() {
-            match pull_and_make_entry_factored(resolved, factored, reporter, cache, runtime) {
+            // Pre-flight: check the manifest layer count before attempting the
+            // pull. Some container runtimes (e.g. gvisor on Modal) SIGKILL
+            // docker pull when layers exceed their limit, producing no stderr
+            // output and therefore no LayerLimitExceeded signal from
+            // classify_pull_error. Checking upfront avoids that silent crash.
+            let layer_count = factored.layers.len();
+            let factored_result = if layer_count > 127 {
+                Err(anyhow::anyhow!(bv_core::error::BvError::LayerLimitExceeded(
+                    format!(
+                        "factored image has {layer_count} layers, which exceeds Docker's \
+                         127-layer limit\n  bv will use the base image reference instead"
+                    )
+                )))
+            } else {
+                pull_and_make_entry_factored(resolved, factored, reporter, cache, runtime)
+            };
+            match factored_result {
                 Ok(e) => e,
                 Err(e) if is_layer_limit_error(&e) => {
                     reporter.println(&format!(

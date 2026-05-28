@@ -60,6 +60,9 @@ enum Commands {
         image: PathBuf,
         /// Full registry reference, e.g. `ghcr.io/owner/repo:tag`.
         reference: String,
+        /// Registry token (e.g. a GitHub PAT). Falls back to `GITHUB_TOKEN` env var.
+        #[arg(long, env = "GITHUB_TOKEN")]
+        token: Option<String>,
     },
     /// Fetch and verify a pushed image's digest.
     Verify {
@@ -192,11 +195,15 @@ async fn main() -> Result<()> {
             eprintln!("  Repodata snapshot digest: {snapshot_digest}");
         }
 
-        Commands::Push { image, reference } => {
+        Commands::Push { image, reference, token } => {
             eprintln!("  Loading tarball from {}...", image.display());
             let loaded = oci::load_from_tarball(&image).context("load OCI tarball")?;
             eprintln!("  Pushing {} layers to {reference}...", loaded.layers.len());
-            let digest = oci::push(&loaded, &reference).await.context("push image")?;
+            let digest = match token {
+                Some(t) => oci::push_authenticated(&loaded, &reference, &t).await,
+                None => oci::push(&loaded, &reference).await,
+            }
+            .context("push image")?;
             eprintln!("  Pushed: {digest}");
             std::fs::write("/tmp/push-digest.txt", &digest)
                 .context("write /tmp/push-digest.txt")?;
