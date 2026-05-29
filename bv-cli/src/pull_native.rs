@@ -72,6 +72,38 @@ pub async fn pull_native(oci_ref: &OciRef) -> Result<String> {
     Ok(manifest_digest)
 }
 
+/// Fetch the image manifest from the registry and return how many layers it
+/// declares, without downloading any blobs. This is a cheap HTTPS round-trip
+/// (token + manifest JSON) used as a pre-flight before committing to a full
+/// pull.
+///
+/// The layer count that matters for Docker's storage-driver depth limit lives
+/// in the *image* manifest on the registry, not in the bv tool manifest's
+/// `[tool.factored]` block (that array is empty for every registry entry today).
+/// So this is the only reliable place to read the real count from.
+pub async fn fetch_layer_count(oci_ref: &OciRef) -> Result<usize> {
+    let token = fetch_bearer_token(oci_ref).await?;
+    let client = build_client();
+    let (manifest_bytes, _digest) = fetch_manifest(&client, oci_ref, &token).await?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).context("parse manifest JSON")?;
+    let layers = manifest["layers"]
+        .as_array()
+        .context("manifest.layers missing")?;
+    Ok(layers.len())
+}
+
+/// Blocking wrapper around [`fetch_layer_count`] for use from synchronous
+/// contexts (e.g. inside `spawn_blocking`). Spins up a small current-thread
+/// runtime for the single request.
+pub fn fetch_layer_count_blocking(oci_ref: &OciRef) -> Result<usize> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build current-thread runtime for layer-count probe")?;
+    rt.block_on(fetch_layer_count(oci_ref))
+}
+
 async fn fetch_bearer_token(oci_ref: &OciRef) -> Result<String> {
     let creds = docker_credentials(&oci_ref.registry);
     let client = build_client();
