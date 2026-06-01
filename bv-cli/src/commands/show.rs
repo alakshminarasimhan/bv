@@ -216,9 +216,9 @@ struct JsonIo<'a> {
     name: &'a str,
     r#type: String,
     cardinality: String,
+    required: bool,              // ← NEW
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     mount: Option<String>,
 }
 
@@ -227,6 +227,7 @@ fn to_json_io(spec: &IoSpec) -> JsonIo<'_> {
         name: &spec.name,
         r#type: spec.r#type.to_string(),
         cardinality: spec.cardinality.to_string(),
+        required: spec.required,    // ← NEW
         description: spec.description.as_deref(),
         mount: spec
             .mount
