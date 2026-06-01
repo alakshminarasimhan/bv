@@ -897,10 +897,12 @@ fn prompt_io_spec(label: &str, existing: Option<&IoSpec>) -> anyhow::Result<IoSp
         name,
         r#type: type_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?,
         cardinality,
+        required: false,                          // ← ADD
         mount: Some(PathBuf::from(mount)),
         description: non_empty(description),
         default: None,
     })
+
 }
 
 fn edit_subcommands(
@@ -1140,6 +1142,7 @@ fn parse_io_specs(metas: &[IoMeta]) -> anyhow::Result<Vec<IoSpec>> {
                 name: m.name.clone(),
                 r#type: type_ref,
                 cardinality,
+                required: false,                  // ← ADD
                 mount: m.mount.as_deref().map(PathBuf::from),
                 description: m.description.clone(),
                 default: None,
