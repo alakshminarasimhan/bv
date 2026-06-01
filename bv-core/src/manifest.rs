@@ -255,19 +255,22 @@ pub struct ReferenceDataSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IoSpec {
     pub name: String,
-    /// Type reference, e.g. `"fasta"` or `"fasta[protein]"`.
     #[serde(rename = "type")]
     pub r#type: TypeRef,
-    /// How many values this port accepts.
     #[serde(default)]
     pub cardinality: Cardinality,
-    /// Absolute path inside the container where this value is mounted.
+    #[serde(default = "default_required")]   // ← NEW
+    pub required: bool,                       // ← NEW
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+}
+
+fn default_required() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
